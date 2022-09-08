@@ -7,6 +7,7 @@ import (
 const (
 	ArrayDefaultMaxSize = 4096
 	BitmapMaxCapacity   = 65536
+	BitmapToArrayCount  = 2048
 )
 
 type sortArray []uint16
@@ -77,9 +78,9 @@ type ArrayContainer struct {
 	content sortArray
 }
 
-func newArrayContainer() *ArrayContainer {
+func newArrayContainer(size int) *ArrayContainer {
 	return &ArrayContainer{
-		content: make(sortArray, 4),
+		content: make(sortArray, size),
 	}
 }
 
@@ -111,15 +112,19 @@ func newBitmapContainer() *BitmapContainer {
 }
 
 func (ac BitmapContainer) add(x uint16) {
-	ac.bitmap.Set(uint64(x))
+	ac.bitmap.Set(uint(x))
 }
 
 func (ac BitmapContainer) contains(x uint16) bool {
-	return ac.bitmap.Get(uint64(x))
+	return ac.bitmap.Get(uint(x))
 }
 
 func (ac BitmapContainer) remove(x uint16) {
-	ac.bitmap.Clear(uint64(x))
+	ac.bitmap.Clear(uint(x))
+}
+
+func (ac BitmapContainer) onesCount() uint {
+	return ac.bitmap.Cardinality()
 }
 
 type RunContainer struct {
@@ -161,7 +166,7 @@ func (rb *RoaringBitmap) Add(x uint32) {
 		ra.values = append(ra.values, nil)
 		copy(ra.keys[i+1:], ra.keys[i:])
 		copy(ra.values[i+1:], ra.values[i:])
-		newac := newArrayContainer()
+		newac := newArrayContainer(4)
 		newac.add(lb)
 		ra.keys[i] = hb
 		ra.setContainer(i, newac)
@@ -183,8 +188,22 @@ func (rb *RoaringBitmap) Remove(x uint32) {
 	hb := uint16(x >> 16)
 	ra := &rb.highLowConatiner
 	i, found := ra.getIndex(hb)
-	if found {
-		lb := uint16(x)
-		ra.values[i].remove(lb)
+	if !found {
+		return
+	}
+	lb := uint16(x)
+	switch c := ra.values[i].(type) {
+	case *ArrayContainer:
+		c.remove(lb)
+	case *BitmapContainer:
+		c.remove(lb)
+		if c.onesCount() < BitmapToArrayCount {
+			ac := newArrayContainer(int(c.onesCount()))
+			c.bitmap.ForeachSetBit(0, func(u uint) bool {
+				ac.add(uint16(u))
+				return false
+			})
+			ra.values[i] = ac
+		}
 	}
 }
